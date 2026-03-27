@@ -1,0 +1,10 @@
+[project]
+name = "uvc-cam-jetson"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "loguru>=0.7.3",
+    "pyside6==6.8.0.2",
+]
