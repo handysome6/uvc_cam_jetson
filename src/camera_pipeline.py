@@ -17,6 +17,7 @@ Platform selection:
   Dev/Mac — jpegdec + videoconvert + autovideosink (software, test source)
 """
 
+import os
 import threading
 from datetime import datetime
 
@@ -35,8 +36,17 @@ from PySide6.QtGui import QImage
 # ---------------------------------------------------------------------------
 
 def is_jetson() -> bool:
-    """Return True if running on Jetson (nvv4l2 GStreamer plugin is present)."""
-    result = Gst.Registry.get().find_plugin("nvv4l2") is not None
+    """
+    Return True if running on Jetson with NVIDIA HW-accelerated GStreamer elements.
+
+    Detection order:
+      1. nvv4l2decoder element factory — the specific element we use for HW decode
+      2. /etc/nv_tegra_release        — filesystem marker present on all Jetson platforms
+    """
+    if Gst.ElementFactory.find("nvv4l2decoder") is not None:
+        result = True
+    else:
+        result = os.path.exists("/etc/nv_tegra_release")
     logger.info("Platform: {}", "Jetson (HW accelerated)" if result else "Dev machine (SW path)")
     return result
 
@@ -155,10 +165,11 @@ class CameraPipeline(QObject):
                 )
         else:
             # Dev / macOS: software decode with a test source
-            # (v4l2src is Linux-only; use videotestsrc to exercise the full pipeline)
+            # Use 1280x720 — same as preview output — so jpegenc/jpegdec run fast
+            # and there is no videoscale step needed. (5120x3840 @ SW decode crashes libjpeg)
             src = (
                 "videotestsrc is-live=true pattern=ball ! "
-                f"video/x-raw,width=5120,height=3840,framerate=55/2 ! "
+                f"video/x-raw,width={W},height={H},framerate=27/1 ! "
                 "jpegenc ! image/jpeg ! "
                 "tee name=t "
             )
@@ -168,13 +179,13 @@ class CameraPipeline(QObject):
             )
             if self._use_overlay:
                 preview_branch = (
-                    f"t. ! queue ! jpegdec ! videoconvert ! videoscale ! "
+                    f"t. ! queue ! jpegdec ! videoconvert ! "
                     f"video/x-raw,width={W},height={H} ! "
                     "autovideosink name=preview_sink sync=false "
                 )
             else:
                 preview_branch = (
-                    f"t. ! queue ! jpegdec ! videoconvert ! videoscale ! "
+                    f"t. ! queue ! jpegdec ! videoconvert ! "
                     f"video/x-raw,format=RGB,width={W},height={H} ! "
                     "appsink name=preview_sink drop=true max-buffers=1 "
                     "emit-signals=true sync=false "
