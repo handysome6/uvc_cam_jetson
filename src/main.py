@@ -16,6 +16,7 @@ import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstVideo', '1.0')
 from gi.repository import Gst
+from loguru import logger
 
 from PySide6.QtWidgets import QApplication
 
@@ -25,6 +26,7 @@ from main_window import MainWindow
 
 def main():
     Gst.init(None)
+    logger.info("GStreamer initialized")
 
     parser = argparse.ArgumentParser(description="UVC dual-camera preview/capture")
     parser.add_argument("--device", default="/dev/video0", help="Camera device path")
@@ -37,8 +39,14 @@ def main():
 
     # VideoOverlay is the preferred path on Jetson; on dev machines fall back
     use_overlay = is_jetson() and not args.no_overlay
+    logger.info(
+        "Config | device={} preview={}",
+        args.device,
+        "VideoOverlay" if use_overlay else "appsink fallback",
+    )
 
     app = QApplication(sys.argv)
+    logger.info("Launching MainWindow")
     window = MainWindow(device=args.device, use_overlay=use_overlay)
     window.show()
     sys.exit(app.exec())

@@ -15,6 +15,7 @@ Capture files land in ~/captures/capture_YYYYMMDD_HHMMSS_mmm.jpg
 import os
 from datetime import datetime
 
+from loguru import logger
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
@@ -149,14 +150,18 @@ class MainWindow(QMainWindow):
         if self._pipeline.use_overlay:
             handle = int(self._preview.winId())
 
+        logger.info("Window shown — starting pipeline (overlay={})", self._pipeline.use_overlay)
         ok = self._pipeline.start(window_handle=handle)
         if ok:
             self._status.setText(f"Camera running — captures → {CAPTURE_DIR}")
+            logger.success("Pipeline running | captures → {}", CAPTURE_DIR)
         else:
             msg = self._pipeline.error_message or "Unknown error"
+            logger.error("Pipeline failed to start: {}", msg)
             self._show_error(msg)
 
     def closeEvent(self, event):
+        logger.info("Window closing — stopping pipeline")
         self._pipeline.stop()
         super().closeEvent(event)
 
@@ -168,6 +173,7 @@ class MainWindow(QMainWindow):
     def _on_capture(self):
         filename = _generate_filename()
         path = os.path.join(CAPTURE_DIR, filename)
+        logger.info("Capture triggered → {}", path)
         ok = self._pipeline.capture_to_file(path)
         if ok:
             self._status.setText(f"Saved: {filename}")
@@ -175,6 +181,7 @@ class MainWindow(QMainWindow):
             self._capture_btn.setText("Saved!")
             QTimer.singleShot(800, self._reset_capture_btn)
         else:
+            logger.warning("Capture failed: no frame cached yet")
             self._status.setText("No frame cached yet — try again in a moment")
 
     @Slot()
@@ -203,10 +210,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_pipeline_error(self, msg: str):
+        logger.error("Pipeline error: {}", msg)
         self._show_error(msg)
 
     @Slot()
     def _on_pipeline_eos(self):
+        logger.warning("Pipeline EOS received")
         self._status.setText("Stream ended (EOS)")
 
     def _show_error(self, msg: str):

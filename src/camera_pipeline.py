@@ -24,6 +24,7 @@ import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstVideo', '1.0')
 from gi.repository import Gst
+from loguru import logger
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
@@ -35,7 +36,9 @@ from PySide6.QtGui import QImage
 
 def is_jetson() -> bool:
     """Return True if running on Jetson (nvv4l2 GStreamer plugin is present)."""
-    return Gst.Registry.get().find_plugin("nvv4l2") is not None
+    result = Gst.Registry.get().find_plugin("nvv4l2") is not None
+    logger.info("Platform: {}", "Jetson (HW accelerated)" if result else "Dev machine (SW path)")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +57,14 @@ class _FrameWriter(QRunnable):
         buf = self._sample.get_buffer()
         result, map_info = buf.map(Gst.MapFlags.READ)
         if not result:
+            logger.error("Failed to map GstBuffer for capture write: {}", self._path)
             return
         try:
             with open(self._path, "wb") as f:
                 f.write(bytes(map_info.data))
+            logger.success("Frame saved → {} ({:.1f} KB)", self._path, len(map_info.data) / 1024)
+        except OSError as exc:
+            logger.error("Failed to write capture file {}: {}", self._path, exc)
         finally:
             buf.unmap(map_info)
 
@@ -173,7 +180,9 @@ class CameraPipeline(QObject):
                     "emit-signals=true sync=false "
                 )
 
-        return src + preview_branch + capture_branch
+        pipeline_str = src + preview_branch + capture_branch
+        logger.debug("Pipeline string: {}", pipeline_str)
+        return pipeline_str
 
     # ------------------------------------------------------------------
     # Lifecycle: start / stop (task 2.3)
@@ -190,6 +199,10 @@ class CameraPipeline(QObject):
             True if the pipeline reached PLAYING state (or ASYNC).
         """
         self._window_handle = window_handle
+        logger.info(
+            "Starting pipeline | device={} overlay={} jetson={}",
+            self._device, self._use_overlay, self._on_jetson,
+        )
 
         pipeline_str = self._build_pipeline_string()
         try:
@@ -197,12 +210,14 @@ class CameraPipeline(QObject):
         except Exception as exc:
             self._state = "error"
             self._error_message = str(exc)
+            logger.error("Pipeline parse failed: {}", exc)
             self.pipeline_error.emit(self._error_message)
             return False
 
         if self._pipeline is None:
             self._state = "error"
             self._error_message = "Gst.parse_launch returned None"
+            logger.error(self._error_message)
             self.pipeline_error.emit(self._error_message)
             return False
 
@@ -213,6 +228,7 @@ class CameraPipeline(QObject):
         if self._capture_sink is None:
             self._state = "error"
             self._error_message = "capture_sink element not found in pipeline"
+            logger.error(self._error_message)
             self.pipeline_error.emit(self._error_message)
             return False
 
@@ -236,15 +252,18 @@ class CameraPipeline(QObject):
         if ret == Gst.StateChangeReturn.FAILURE:
             self._state = "error"
             self._error_message = "Failed to set pipeline to PLAYING"
+            logger.error(self._error_message)
             self.pipeline_error.emit(self._error_message)
             return False
 
         self._state = "playing"
         self._bus_timer.start()
+        logger.success("Pipeline playing | device={} overlay={}", self._device, self._use_overlay)
         return True
 
     def stop(self):
         """Stop the pipeline and release all resources."""
+        logger.info("Stopping pipeline | device={}", self._device)
         self._bus_timer.stop()
         if self._pipeline is not None:
             self._pipeline.set_state(Gst.State.NULL)
@@ -254,6 +273,7 @@ class CameraPipeline(QObject):
         with self._sample_lock:
             self._latest_sample = None
         self._state = "stopped"
+        logger.info("Pipeline stopped")
 
     # ------------------------------------------------------------------
     # Capture appsink callback — GStreamer streaming thread (task 2.4)
@@ -312,7 +332,10 @@ class CameraPipeline(QObject):
             return
         if structure.get_name() == "prepare-window-handle":
             if self._window_handle is not None:
+                logger.info("VideoOverlay: setting window handle 0x{:x}", self._window_handle)
                 message.src.set_window_handle(self._window_handle)
+            else:
+                logger.warning("VideoOverlay: prepare-window-handle received but no window handle set")
 
     # ------------------------------------------------------------------
     # GStreamer bus polling — Qt main thread (task 2.5)
@@ -329,13 +352,15 @@ class CameraPipeline(QObject):
             if msg is None:
                 break
             if msg.type == Gst.MessageType.ERROR:
-                err, _debug = msg.parse_error()
+                err, debug = msg.parse_error()
                 self._state = "error"
                 self._error_message = str(err)
+                logger.error("GStreamer error: {} | debug: {}", err, debug)
                 self.pipeline_error.emit(self._error_message)
                 self._bus_timer.stop()
             elif msg.type == Gst.MessageType.EOS:
                 self._state = "stopped"
+                logger.warning("GStreamer EOS — stream ended")
                 self.pipeline_eos.emit()
                 self._bus_timer.stop()
 
@@ -369,8 +394,10 @@ class CameraPipeline(QObject):
             sample = self._latest_sample
 
         if sample is None:
+            logger.warning("capture_to_file: no cached sample available yet")
             return False
 
+        logger.info("Capture queued → {}", path)
         QThreadPool.globalInstance().start(_FrameWriter(sample, path))
         return True
 
