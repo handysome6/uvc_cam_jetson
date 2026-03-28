@@ -183,8 +183,6 @@ def build_gstreamer_command(device: str, mode: CaptureMode) -> List[str]:
         "!",
         f"image/jpeg,width={mode.width},height={mode.height},framerate={mode.gst_framerate}",
         "!",
-        "jpegparse",
-        "!",
         "nvv4l2decoder",
         "mjpeg=1",
         "!",
