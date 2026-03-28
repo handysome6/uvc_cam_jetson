@@ -27,7 +27,7 @@ from datetime import datetime
 import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstVideo', '1.0')
-from gi.repository import Gst
+from gi.repository import Gst, GstVideo
 from loguru import logger
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
@@ -407,7 +407,7 @@ class CameraPipeline(QObject):
         if structure.get_name() == "prepare-window-handle":
             if self._window_handle is not None:
                 logger.info("VideoOverlay: setting window handle 0x{:x}", self._window_handle)
-                message.src.set_window_handle(self._window_handle)
+                GstVideo.VideoOverlay.set_window_handle(message.src, self._window_handle)
             else:
                 logger.warning("VideoOverlay: prepare-window-handle received but no window handle set")
 
