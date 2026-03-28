@@ -55,16 +55,17 @@ def _is_capture_device(dev_path: str) -> bool:
         return False
 
 
-def find_uvc_camera() -> str | None:
+def find_uvc_cameras() -> list[str]:
     """
-    Scan sysfs to find the first USB UVC capture device.
+    Scan sysfs to find all USB UVC capture devices.
 
     Criteria:
       - sysfs path resolves through a 'usb' bus (i.e. it is a USB device)
       - VIDIOC_QUERYCAP reports V4L2_CAP_VIDEO_CAPTURE
 
-    Returns the /dev/videoX path, or None if nothing is found.
+    Returns a list of /dev/videoX paths ordered by device number.
     """
+    found: list[str] = []
     candidates = sorted(glob.glob("/sys/class/video4linux/video*"))
     for video_dir in candidates:
         try:
@@ -77,9 +78,16 @@ def find_uvc_camera() -> str | None:
         logger.debug("Probing {} (sysfs: {})", dev, real)
         if _is_capture_device(dev):
             logger.info("UVC camera found: {}", dev)
-            return dev
-    logger.warning("No USB UVC capture device found in /sys/class/video4linux/")
-    return None
+            found.append(dev)
+    if not found:
+        logger.warning("No USB UVC capture device found in /sys/class/video4linux/")
+    return found
+
+
+def find_uvc_camera() -> str | None:
+    """Return the first USB UVC capture device, or None."""
+    devices = find_uvc_cameras()
+    return devices[0] if devices else None
 
 
 # ---------------------------------------------------------------------------
