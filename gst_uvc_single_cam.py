@@ -2,9 +2,8 @@
 """Interactive single-camera launcher for Jetson UVC MJPEG preview."""
 
 import argparse
-import os
 import re
-import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -12,6 +11,11 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import List, Optional, Sequence
+
+import gi
+
+gi.require_version("Gst", "1.0")
+from gi.repository import GLib, Gst  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -174,25 +178,159 @@ def detect_best_mjpeg_mode(device: str) -> CaptureMode:
     return best_mode
 
 
-def build_gstreamer_command(device: str, mode: CaptureMode) -> List[str]:
-    return [
-        "gst-launch-1.0",
-        "-v",
-        "v4l2src",
-        f"device={device}",
-        "!",
-        f"image/jpeg,width={mode.width},height={mode.height},framerate={mode.gst_framerate}",
-        "!",
-        "nvv4l2decoder",
-        "mjpeg=1",
-        "!",
-        "nvvidconv",
-        "!",
-        "video/x-raw(memory:NVMM),width=1280,height=720,format=NV12",
-        "!",
-        "nveglglessink",
-        "sync=false",
-    ]
+def validate_jpeg(data) -> bool:
+    """Validate JPEG structural integrity by walking marker segments.
+
+    Walks from SOI through marker segments to SOS, verifying each marker
+    has a valid type and correct segment length.  Does NOT validate the
+    entropy-coded scan data — corruption there produces visual artifacts
+    but will not crash jpegparse.
+    """
+    size = len(data)
+    if size < 4:
+        return False
+
+    # SOI (0xFFD8) at start
+    if data[0] != 0xFF or data[1] != 0xD8:
+        return False
+
+    # EOI (0xFFD9) at end
+    if data[size - 2] != 0xFF or data[size - 1] != 0xD9:
+        return False
+
+    # Walk marker segments after SOI
+    offset = 2
+    while offset < size - 1:
+        if data[offset] != 0xFF:
+            return False
+
+        # Skip fill 0xFF bytes
+        while offset < size - 1 and data[offset + 1] == 0xFF:
+            offset += 1
+        if offset + 1 >= size:
+            return False
+
+        marker = data[offset + 1]
+        offset += 2
+
+        # EOI — valid end
+        if marker == 0xD9:
+            return True
+
+        # SOS — start of entropy-coded scan; structure is valid
+        if marker == 0xDA:
+            return True
+
+        # Standalone markers (no length): RST0–RST7, TEM
+        if (0xD0 <= marker <= 0xD7) or marker == 0x01:
+            continue
+
+        # Second SOI is invalid
+        if marker == 0xD8:
+            return False
+
+        # Byte-stuffed 0x00 should not appear in marker area
+        if marker == 0x00:
+            return False
+
+        # All other markers carry a 2-byte length
+        if offset + 2 > size:
+            return False
+        seg_len = (data[offset] << 8) | data[offset + 1]
+        if seg_len < 2:
+            return False
+
+        offset += seg_len
+        if offset > size:
+            return False
+
+    return False
+
+
+_drop_count = 0
+
+
+def _jpeg_probe(pad, info):
+    """Pad probe callback — drop buffers whose JPEG structure is invalid."""
+    global _drop_count
+
+    buf = info.get_buffer()
+    if buf is None:
+        return Gst.PadProbeReturn.DROP
+
+    ok, map_info = buf.map(Gst.MapFlags.READ)
+    if not ok:
+        return Gst.PadProbeReturn.DROP
+
+    try:
+        if validate_jpeg(map_info.data):
+            return Gst.PadProbeReturn.OK
+        _drop_count += 1
+        print(
+            f"\rDropped corrupted JPEG frame #{_drop_count} "
+            f"({buf.get_size()} bytes)",
+            end="",
+            flush=True,
+        )
+        return Gst.PadProbeReturn.DROP
+    finally:
+        buf.unmap(map_info)
+
+
+def run_preview_pipeline(device: str, mode: CaptureMode) -> int:
+    """Build and run a GStreamer preview pipeline with JPEG validation."""
+    Gst.init(None)
+
+    pipeline_desc = (
+        f"v4l2src device={device} io-mode=mmap "
+        f"! image/jpeg,width={mode.width},height={mode.height},"
+        f"framerate={mode.gst_framerate} "
+        f"! jpegparse name=parser "
+        f"! nvv4l2decoder mjpeg=1 "
+        f"! nvvidconv "
+        f"! video/x-raw(memory:NVMM),width=1280,height=720,format=NV12 "
+        f"! nveglglessink sync=false"
+    )
+
+    print(f"Pipeline: {pipeline_desc}", flush=True)
+    pipeline = Gst.parse_launch(pipeline_desc)
+
+    # Attach JPEG validation probe on jpegparse's sink pad
+    parser = pipeline.get_by_name("parser")
+    sink_pad = parser.get_static_pad("sink")
+    sink_pad.add_probe(Gst.PadProbeType.BUFFER, _jpeg_probe)
+
+    loop = GLib.MainLoop()
+
+    bus = pipeline.get_bus()
+    bus.add_signal_watch()
+
+    def on_bus_message(_bus, message):
+        if message.type == Gst.MessageType.EOS:
+            print("\nEnd of stream", flush=True)
+            loop.quit()
+        elif message.type == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            print(f"\nERROR: {err.message}", flush=True)
+            if debug:
+                print(f"Debug: {debug}", flush=True)
+            loop.quit()
+
+    bus.connect("message", on_bus_message)
+
+    # Handle Ctrl+C inside the GLib main loop
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, loop.quit)
+
+    pipeline.set_state(Gst.State.PLAYING)
+    try:
+        loop.run()
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+
+    if _drop_count > 0:
+        print(f"\nTotal corrupted frames dropped: {_drop_count}", flush=True)
+
+    return 0
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -210,9 +348,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv[1:])
 
-    require_command("python3")
     require_command("v4l2-ctl")
-    require_command("gst-launch-1.0")
 
     if args.device:
         device = args.device
@@ -223,17 +359,15 @@ def main(argv: Sequence[str]) -> int:
         raise SystemExit(f"V4L2 device not found: {device}")
 
     mode = detect_best_mjpeg_mode(device)
-    command = build_gstreamer_command(device, mode)
 
     print(f"Using device: {device}", flush=True)
     print(
-        f"Detected MJPEG mode: {mode.width}x{mode.height} @ {mode.gst_framerate} fps ({mode.display_fps} fps)",
+        f"Detected MJPEG mode: {mode.width}x{mode.height} "
+        f"@ {mode.gst_framerate} fps ({mode.display_fps} fps)",
         flush=True,
     )
-    print(f"Launching: {shlex.join(command)}", flush=True)
 
-    os.execvp(command[0], command)
-    return 0
+    return run_preview_pipeline(device, mode)
 
 
 if __name__ == "__main__":
