@@ -17,7 +17,10 @@ Platform selection:
   Dev/Mac — jpegdec + videoconvert + autovideosink (software, test source)
 """
 
+import fcntl
+import glob
 import os
+import struct
 import threading
 from datetime import datetime
 
@@ -29,6 +32,54 @@ from loguru import logger
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
+
+
+# ---------------------------------------------------------------------------
+# UVC device auto-detection
+# ---------------------------------------------------------------------------
+
+# v4l2 ioctl constants (from <linux/videodev2.h>)
+_VIDIOC_QUERYCAP = 0x80685600
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+
+
+def _is_capture_device(dev_path: str) -> bool:
+    """Return True if the device supports V4L2 video capture (VIDIOC_QUERYCAP)."""
+    try:
+        with open(dev_path, "rb") as f:
+            buf = b"\x00" * 104  # sizeof(struct v4l2_capability)
+            info = fcntl.ioctl(f, _VIDIOC_QUERYCAP, buf)
+        caps = struct.unpack_from("I", info, 20)[0]  # .capabilities field
+        return bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
+    except Exception:
+        return False
+
+
+def find_uvc_camera() -> str | None:
+    """
+    Scan sysfs to find the first USB UVC capture device.
+
+    Criteria:
+      - sysfs path resolves through a 'usb' bus (i.e. it is a USB device)
+      - VIDIOC_QUERYCAP reports V4L2_CAP_VIDEO_CAPTURE
+
+    Returns the /dev/videoX path, or None if nothing is found.
+    """
+    candidates = sorted(glob.glob("/sys/class/video4linux/video*"))
+    for video_dir in candidates:
+        try:
+            real = os.path.realpath(video_dir)
+        except OSError:
+            continue
+        if "usb" not in real.lower():
+            continue
+        dev = "/dev/" + os.path.basename(video_dir)
+        logger.debug("Probing {} (sysfs: {})", dev, real)
+        if _is_capture_device(dev):
+            logger.info("UVC camera found: {}", dev)
+            return dev
+    logger.warning("No USB UVC capture device found in /sys/class/video4linux/")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -273,17 +324,29 @@ class CameraPipeline(QObject):
         return True
 
     def stop(self):
-        """Stop the pipeline and release all resources."""
+        """Stop the pipeline and release all resources.
+
+        Blocks until:
+          - GStreamer reaches NULL state (up to 3 s)
+          - Any in-flight QThreadPool file-write tasks finish (up to 2 s)
+        Safe to call multiple times or from a signal handler.
+        """
+        if self._state == "stopped" and self._pipeline is None:
+            return
         logger.info("Stopping pipeline | device={}", self._device)
         self._bus_timer.stop()
         if self._pipeline is not None:
             self._pipeline.set_state(Gst.State.NULL)
+            # Block until GStreamer streaming threads actually reach NULL
+            self._pipeline.get_state(3 * Gst.SECOND)
             self._pipeline = None
         self._preview_sink = None
         self._capture_sink = None
         with self._sample_lock:
             self._latest_sample = None
         self._state = "stopped"
+        # Wait for any in-flight frame-write tasks to finish
+        QThreadPool.globalInstance().waitForDone(2000)
         logger.info("Pipeline stopped")
 
     # ------------------------------------------------------------------
