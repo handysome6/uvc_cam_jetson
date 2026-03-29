@@ -390,7 +390,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--no-check-walk",
         action="store_true",
-        help="Disable marker segment walk (header structure validation).",
+        default=True,
+        help="Disable marker segment walk (disabled by default; use --check-walk to enable).",
+    )
+    parser.add_argument(
+        "--check-walk",
+        action="store_true",
+        help="Enable marker segment walk (header structure validation).",
     )
     return parser.parse_args(argv)
 
@@ -422,7 +428,7 @@ def main(argv: Sequence[str]) -> int:
         mode,
         check_soi=not args.no_check_soi,
         check_eoi=not args.no_check_eoi,
-        check_walk=not args.no_check_walk,
+        check_walk=args.check_walk,
     )
 
 

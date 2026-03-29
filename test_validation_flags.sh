@@ -13,14 +13,15 @@ SCRIPT="$(dirname "$0")/gst_uvc_single_cam.py"
 LABELS=()
 FLAGS=()
 
-LABELS+=("all checks ON");             FLAGS+=("")
-LABELS+=("--no-check-soi");            FLAGS+=("--no-check-soi")
-LABELS+=("--no-check-eoi");            FLAGS+=("--no-check-eoi")
-LABELS+=("--no-check-walk");           FLAGS+=("--no-check-walk")
-LABELS+=("--no-check-soi --no-check-eoi");   FLAGS+=("--no-check-soi --no-check-eoi")
-LABELS+=("--no-check-soi --no-check-walk");  FLAGS+=("--no-check-soi --no-check-walk")
-LABELS+=("--no-check-eoi --no-check-walk");  FLAGS+=("--no-check-eoi --no-check-walk")
-LABELS+=("all checks OFF");            FLAGS+=("--no-check-soi --no-check-eoi --no-check-walk")
+# Note: walk is OFF by default; use --check-walk to enable it.
+LABELS+=("default (soi+eoi)");                FLAGS+=("")
+LABELS+=("soi+eoi+walk");                     FLAGS+=("--check-walk")
+LABELS+=("eoi only");                         FLAGS+=("--no-check-soi")
+LABELS+=("soi only");                         FLAGS+=("--no-check-eoi")
+LABELS+=("walk only");                        FLAGS+=("--no-check-soi --no-check-eoi --check-walk")
+LABELS+=("soi+walk");                         FLAGS+=("--no-check-eoi --check-walk")
+LABELS+=("eoi+walk");                         FLAGS+=("--no-check-soi --check-walk")
+LABELS+=("all checks OFF");                   FLAGS+=("--no-check-soi --no-check-eoi")
 
 TOTAL=${#LABELS[@]}
 
