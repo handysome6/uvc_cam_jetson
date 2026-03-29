@@ -111,6 +111,49 @@ def is_jetson() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# JPEG validation probe — drop corrupted frames before jpegparse
+# ---------------------------------------------------------------------------
+
+def _validate_jpeg(data) -> bool:
+    """Check SOI (0xFFD8) at start and EOI (0xFFD9) at end."""
+    size = len(data)
+    if size < 4:
+        return False
+    if data[0] != 0xFF or data[1] != 0xD8:
+        return False
+    if data[size - 2] != 0xFF or data[size - 1] != 0xD9:
+        return False
+    return True
+
+
+def _make_jpeg_probe(device: str):
+    """Create a pad probe callback that drops invalid JPEG buffers."""
+    drop_count = 0
+
+    def probe(pad, info):
+        nonlocal drop_count
+        buf = info.get_buffer()
+        if buf is None:
+            return Gst.PadProbeReturn.DROP
+        ok, map_info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.PadProbeReturn.DROP
+        try:
+            if _validate_jpeg(map_info.data):
+                return Gst.PadProbeReturn.OK
+            drop_count += 1
+            logger.debug(
+                "Dropped corrupted JPEG #{} ({} bytes) on {}",
+                drop_count, buf.get_size(), device,
+            )
+            return Gst.PadProbeReturn.DROP
+        finally:
+            buf.unmap(map_info)
+
+    return probe
+
+
+# ---------------------------------------------------------------------------
 # File-write worker (runs on QThreadPool, never on the UI thread)
 # ---------------------------------------------------------------------------
 
@@ -210,14 +253,14 @@ class CameraPipeline(QObject):
             if self._use_overlay:
                 # HW decode -> VideoOverlay sink
                 preview_branch = (
-                    f"t. ! queue ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! "
+                    f"t. ! queue ! jpegparse name=parser ! nvv4l2decoder mjpeg=1 ! nvvidconv ! "
                     f"video/x-raw(memory:NVMM),width={W},height={H},format=NV12 ! "
                     "nveglglessink name=preview_sink sync=false "
                 )
             else:
                 # HW decode -> RGB -> appsink (CPU copy for QImage)
                 preview_branch = (
-                    f"t. ! queue ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! "
+                    f"t. ! queue ! jpegparse name=parser ! nvv4l2decoder mjpeg=1 ! nvvidconv ! "
                     f"video/x-raw,format=RGB,width={W},height={H} ! "
                     "appsink name=preview_sink drop=true max-buffers=1 "
                     "emit-signals=true sync=false "
@@ -301,6 +344,16 @@ class CameraPipeline(QObject):
             logger.error(self._error_message)
             self.pipeline_error.emit(self._error_message)
             return False
+
+        # Attach JPEG validation probe on jpegparse sink (Jetson only)
+        if self._on_jetson:
+            parser = self._pipeline.get_by_name("parser")
+            if parser is not None:
+                sink_pad = parser.get_static_pad("sink")
+                sink_pad.add_probe(
+                    Gst.PadProbeType.BUFFER, _make_jpeg_probe(self._device)
+                )
+                logger.info("JPEG validation probe attached | device={}", self._device)
 
         # Connect capture appsink new-sample (task 2.4)
         self._capture_sink.connect("new-sample", self._on_new_capture_sample)
