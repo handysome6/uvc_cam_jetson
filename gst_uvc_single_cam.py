@@ -178,106 +178,127 @@ def detect_best_mjpeg_mode(device: str) -> CaptureMode:
     return best_mode
 
 
-def validate_jpeg(data) -> bool:
-    """Validate JPEG structural integrity by walking marker segments.
+def validate_jpeg(
+    data,
+    check_soi: bool = True,
+    check_eoi: bool = True,
+    check_walk: bool = True,
+) -> bool:
+    """Validate JPEG structural integrity.
 
-    Walks from SOI through marker segments to SOS, verifying each marker
-    has a valid type and correct segment length.  Does NOT validate the
-    entropy-coded scan data — corruption there produces visual artifacts
-    but will not crash jpegparse.
+    Checks are independently toggleable:
+      check_soi  — verify SOI (0xFFD8) at start
+      check_eoi  — verify EOI (0xFFD9) at end
+      check_walk — walk marker segments from SOI to SOS, verifying each
+                   marker type and segment length
+
+    Does NOT validate entropy-coded scan data — corruption there produces
+    visual artifacts but will not crash jpegparse.
     """
     size = len(data)
     if size < 4:
         return False
 
-    # SOI (0xFFD8) at start
-    if data[0] != 0xFF or data[1] != 0xD8:
+    if check_soi:
+        if data[0] != 0xFF or data[1] != 0xD8:
+            return False
+
+    if check_eoi:
+        if data[size - 2] != 0xFF or data[size - 1] != 0xD9:
+            return False
+
+    if check_walk:
+        offset = 2
+        while offset < size - 1:
+            if data[offset] != 0xFF:
+                return False
+
+            # Skip fill 0xFF bytes
+            while offset < size - 1 and data[offset + 1] == 0xFF:
+                offset += 1
+            if offset + 1 >= size:
+                return False
+
+            marker = data[offset + 1]
+            offset += 2
+
+            # EOI — valid end
+            if marker == 0xD9:
+                return True
+
+            # SOS — start of entropy-coded scan; structure is valid
+            if marker == 0xDA:
+                return True
+
+            # Standalone markers (no length): RST0-RST7, TEM
+            if (0xD0 <= marker <= 0xD7) or marker == 0x01:
+                continue
+
+            # Second SOI is invalid
+            if marker == 0xD8:
+                return False
+
+            # Byte-stuffed 0x00 should not appear in marker area
+            if marker == 0x00:
+                return False
+
+            # All other markers carry a 2-byte length
+            if offset + 2 > size:
+                return False
+            seg_len = (data[offset] << 8) | data[offset + 1]
+            if seg_len < 2:
+                return False
+
+            offset += seg_len
+            if offset > size:
+                return False
+
         return False
 
-    # EOI (0xFFD9) at end
-    if data[size - 2] != 0xFF or data[size - 1] != 0xD9:
-        return False
-
-    # Walk marker segments after SOI
-    offset = 2
-    while offset < size - 1:
-        if data[offset] != 0xFF:
-            return False
-
-        # Skip fill 0xFF bytes
-        while offset < size - 1 and data[offset + 1] == 0xFF:
-            offset += 1
-        if offset + 1 >= size:
-            return False
-
-        marker = data[offset + 1]
-        offset += 2
-
-        # EOI — valid end
-        if marker == 0xD9:
-            return True
-
-        # SOS — start of entropy-coded scan; structure is valid
-        if marker == 0xDA:
-            return True
-
-        # Standalone markers (no length): RST0–RST7, TEM
-        if (0xD0 <= marker <= 0xD7) or marker == 0x01:
-            continue
-
-        # Second SOI is invalid
-        if marker == 0xD8:
-            return False
-
-        # Byte-stuffed 0x00 should not appear in marker area
-        if marker == 0x00:
-            return False
-
-        # All other markers carry a 2-byte length
-        if offset + 2 > size:
-            return False
-        seg_len = (data[offset] << 8) | data[offset + 1]
-        if seg_len < 2:
-            return False
-
-        offset += seg_len
-        if offset > size:
-            return False
-
-    return False
+    return True
 
 
-_drop_count = 0
+def _make_jpeg_probe(
+    check_soi: bool, check_eoi: bool, check_walk: bool
+):
+    """Create a pad probe callback with the given validation settings."""
+    drop_count = 0
+
+    def probe(pad, info):
+        nonlocal drop_count
+
+        buf = info.get_buffer()
+        if buf is None:
+            return Gst.PadProbeReturn.DROP
+
+        ok, map_info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.PadProbeReturn.DROP
+
+        try:
+            if validate_jpeg(map_info.data, check_soi, check_eoi, check_walk):
+                return Gst.PadProbeReturn.OK
+            drop_count += 1
+            print(
+                f"\rDropped corrupted JPEG frame #{drop_count} "
+                f"({buf.get_size()} bytes)",
+                end="",
+                flush=True,
+            )
+            return Gst.PadProbeReturn.DROP
+        finally:
+            buf.unmap(map_info)
+
+    return probe
 
 
-def _jpeg_probe(pad, info):
-    """Pad probe callback — drop buffers whose JPEG structure is invalid."""
-    global _drop_count
-
-    buf = info.get_buffer()
-    if buf is None:
-        return Gst.PadProbeReturn.DROP
-
-    ok, map_info = buf.map(Gst.MapFlags.READ)
-    if not ok:
-        return Gst.PadProbeReturn.DROP
-
-    try:
-        if validate_jpeg(map_info.data):
-            return Gst.PadProbeReturn.OK
-        _drop_count += 1
-        print(
-            f"\rDropped corrupted JPEG frame #{_drop_count} "
-            f"({buf.get_size()} bytes)",
-            end="",
-            flush=True,
-        )
-        return Gst.PadProbeReturn.DROP
-    finally:
-        buf.unmap(map_info)
-
-
-def run_preview_pipeline(device: str, mode: CaptureMode) -> int:
+def run_preview_pipeline(
+    device: str,
+    mode: CaptureMode,
+    check_soi: bool = True,
+    check_eoi: bool = True,
+    check_walk: bool = True,
+) -> int:
     """Build and run a GStreamer preview pipeline with JPEG validation."""
     Gst.init(None)
 
@@ -292,20 +313,36 @@ def run_preview_pipeline(device: str, mode: CaptureMode) -> int:
         f"! nveglglessink sync=false"
     )
 
+    any_checks = check_soi or check_eoi or check_walk
+    enabled = []
+    if check_soi:
+        enabled.append("soi")
+    if check_eoi:
+        enabled.append("eoi")
+    if check_walk:
+        enabled.append("walk")
+    print(
+        f"Validation: {', '.join(enabled) if enabled else 'OFF'}",
+        flush=True,
+    )
     print(f"Pipeline: {pipeline_desc}", flush=True)
     pipeline = Gst.parse_launch(pipeline_desc)
 
-    # Attach JPEG validation probe on jpegparse's sink pad
-    parser = pipeline.get_by_name("parser")
-    sink_pad = parser.get_static_pad("sink")
-    sink_pad.add_probe(Gst.PadProbeType.BUFFER, _jpeg_probe)
+    # Attach JPEG validation probe on jpegparse's sink pad (if any checks enabled)
+    if any_checks:
+        parser = pipeline.get_by_name("parser")
+        sink_pad = parser.get_static_pad("sink")
+        probe_fn = _make_jpeg_probe(check_soi, check_eoi, check_walk)
+        sink_pad.add_probe(Gst.PadProbeType.BUFFER, probe_fn)
 
     loop = GLib.MainLoop()
+    exit_code = 0
 
     bus = pipeline.get_bus()
     bus.add_signal_watch()
 
     def on_bus_message(_bus, message):
+        nonlocal exit_code
         if message.type == Gst.MessageType.EOS:
             print("\nEnd of stream", flush=True)
             loop.quit()
@@ -314,6 +351,7 @@ def run_preview_pipeline(device: str, mode: CaptureMode) -> int:
             print(f"\nERROR: {err.message}", flush=True)
             if debug:
                 print(f"Debug: {debug}", flush=True)
+            exit_code = 1
             loop.quit()
 
     bus.connect("message", on_bus_message)
@@ -327,10 +365,7 @@ def run_preview_pipeline(device: str, mode: CaptureMode) -> int:
     finally:
         pipeline.set_state(Gst.State.NULL)
 
-    if _drop_count > 0:
-        print(f"\nTotal corrupted frames dropped: {_drop_count}", flush=True)
-
-    return 0
+    return exit_code
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -341,6 +376,21 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "device",
         nargs="?",
         help="V4L2 device path to use directly, for example /dev/video0.",
+    )
+    parser.add_argument(
+        "--no-check-soi",
+        action="store_true",
+        help="Disable SOI (0xFFD8) check at frame start.",
+    )
+    parser.add_argument(
+        "--no-check-eoi",
+        action="store_true",
+        help="Disable EOI (0xFFD9) check at frame end.",
+    )
+    parser.add_argument(
+        "--no-check-walk",
+        action="store_true",
+        help="Disable marker segment walk (header structure validation).",
     )
     return parser.parse_args(argv)
 
@@ -367,7 +417,13 @@ def main(argv: Sequence[str]) -> int:
         flush=True,
     )
 
-    return run_preview_pipeline(device, mode)
+    return run_preview_pipeline(
+        device,
+        mode,
+        check_soi=not args.no_check_soi,
+        check_eoi=not args.no_check_eoi,
+        check_walk=not args.no_check_walk,
+    )
 
 
 if __name__ == "__main__":
