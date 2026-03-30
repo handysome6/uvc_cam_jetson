@@ -243,7 +243,7 @@ class CameraPipeline(QObject):
         if self._on_jetson:
             src = (
                 f"v4l2src device={self._device} ! "
-                "image/jpeg,width=5120,height=3840,framerate=55/2 ! "
+                "image/jpeg,width=5120,height=3840 ! "
                 "tee name=t "
             )
             capture_branch = (
@@ -381,6 +381,21 @@ class CameraPipeline(QObject):
 
         self._state = "playing"
         self._bus_timer.start()
+
+        # Log negotiated framerate
+        if self._on_jetson:
+            v4l2src = self._pipeline.get_by_name("v4l2src0") or self._pipeline.get_child_by_index(0)
+            if v4l2src:
+                src_pad = v4l2src.get_static_pad("src")
+                if src_pad:
+                    caps = src_pad.get_current_caps()
+                    if caps and caps.get_size() > 0:
+                        structure = caps.get_structure(0)
+                        framerate = structure.get_fraction("framerate")
+                        if framerate[0]:
+                            fps = framerate[1] / framerate[2] if framerate[2] > 0 else 0
+                            logger.info("Negotiated framerate | device={} fps={:.1f}", self._device, fps)
+
         logger.success("Pipeline playing | device={} overlay={}", self._device, self._use_overlay)
         return True
 
