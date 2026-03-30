@@ -2,9 +2,11 @@
 """Interactive single-camera launcher for Jetson UVC MJPEG preview."""
 
 import argparse
+import fcntl
 import re
 import signal
 import shutil
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -67,6 +69,23 @@ def run_checked(command: Sequence[str]) -> str:
     return completed.stdout
 
 
+# V4L2 capability check (duplicated from src/camera_pipeline.py)
+_VIDIOC_QUERYCAP = 0x80685600
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+
+
+def _is_capture_device(dev_path: str) -> bool:
+    """Return True if the device supports V4L2 video capture."""
+    try:
+        with open(dev_path, "rb") as f:
+            buf = b"\x00" * 104
+            info = fcntl.ioctl(f, _VIDIOC_QUERYCAP, buf)
+        caps = struct.unpack_from("I", info, 20)[0]
+        return bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
+    except Exception:
+        return False
+
+
 def scan_camera_devices() -> List[CameraDevice]:
     output = run_checked(["v4l2-ctl", "--list-devices"])
     devices: List[CameraDevice] = []
@@ -82,7 +101,7 @@ def scan_camera_devices() -> List[CameraDevice]:
             current_label = stripped.rstrip(":")
             continue
 
-        if re.fullmatch(r"/dev/video\d+", stripped) and stripped not in seen:
+        if re.fullmatch(r"/dev/video\d+", stripped) and stripped not in seen and _is_capture_device(stripped):
             devices.append(CameraDevice(path=stripped, label=current_label or "Unknown device"))
             seen.add(stripped)
 
