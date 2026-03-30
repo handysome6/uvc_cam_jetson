@@ -49,20 +49,29 @@ Two independent UVC cameras have no hardware sync — "simultaneous" capture mea
 **Layout:**
 ```
 ┌──────────────────┬──────────────────┐
-│   Camera 0       │   Camera 1       │
+│   Left (A)       │   Right (D)      │
 │   (720p preview) │   (720p preview) │
 ├──────────────────┴──────────────────┤
-│  [Capture]   Status: ...            │
+│  [Capture] [Swap Cameras]           │
+│  Status: ...                        │
 └─────────────────────────────────────┘
 ```
 
-### 4. Capture naming: `cam{N}_{timestamp}.jpg`
+### 4. Capture naming: `A_{timestamp}.jpg` (left) / `D_{timestamp}.jpg` (right)
 
-**Choice:** Prefix with camera index, shared timestamp across both cameras in a single capture action.
+**Choice:** Prefix with position identifier (`A` for left canvas, `D` for right canvas), shared timestamp across both cameras in a single capture action.
 
-**Rationale:** Makes it trivial to pair left/right images by timestamp. The `DualCameraManager.capture()` method generates the timestamp once and passes it to both `CameraPipeline.capture_to_file()` calls.
+**Rationale:** Makes it trivial to pair left/right images by timestamp. The naming reflects the camera's position in the GUI (left/right canvas) rather than hardware device index. The `DualCameraManager.capture()` method generates the timestamp once and uses the current camera-to-canvas mapping to determine the prefix.
 
-### 5. Single-camera fallback
+### 5. Camera swap functionality
+
+**Choice:** Add a "Swap Cameras" button in the GUI that swaps the left/right canvas positions. The left canvas is always the "A" camera (saved as `A_{timestamp}.jpg`) and the right canvas is always the "D" camera (saved as `D_{timestamp}.jpg`).
+
+**Rationale:** Users need to control which physical camera corresponds to left/right in the captured images. USB enumeration order (`/dev/video0`, `/dev/video1`) may not match the physical left/right positioning. Swapping the canvas positions allows users to correct the mapping without reconnecting cables.
+
+**Implementation:** `DualCameraManager` maintains a `_camera_mapping` list that maps canvas position [0, 1] to pipeline index [0, 1]. Initially `[0, 1]`, after swap becomes `[1, 0]`. The `swap_cameras()` method reverses this mapping and triggers a GUI update to rebind the window handles.
+
+### 6. Single-camera fallback
 
 **Choice:** If only one UVC device is detected, `DualCameraManager` runs with one pipeline. The second preview panel shows "Camera not connected". No error, no crash.
 

@@ -5,9 +5,11 @@ Phase 1 validated the single-camera pipeline on Jetson: preview via VideoOverlay
 ## What Changes
 
 - Add `DualCameraManager` class that owns two `CameraPipeline` instances, coordinates start/stop lifecycle, and provides a single `capture()` method that reads both latest frames with one shared timestamp
-- Refactor `MainWindow` from one preview panel to two side-by-side panels, each bound to its own `CameraPipeline` via VideoOverlay
+- Implement camera swap functionality: `DualCameraManager.swap_cameras()` allows users to swap left/right canvas positions
+- Refactor `MainWindow` from one preview panel to two side-by-side panels with position labels ("Left (A)" / "Right (D)"), each bound to its own `CameraPipeline` via VideoOverlay
+- Add "Swap Cameras" button to GUI for runtime camera position adjustment
 - Extend UVC auto-detection (`find_uvc_camera`) to discover multiple cameras and assign them to left/right slots
-- Update capture file naming to include camera identity: `cam0_<timestamp>.jpg` / `cam1_<timestamp>.jpg`
+- Update capture file naming to position-based prefixes: `A_<timestamp>.jpg` (left canvas) / `D_<timestamp>.jpg` (right canvas)
 - Update `main.py` entry point to use `DualCameraManager` instead of a single `CameraPipeline`
 
 ## Capabilities
@@ -18,7 +20,7 @@ Phase 1 validated the single-camera pipeline on Jetson: preview via VideoOverlay
 
 ### Modified Capabilities
 - `camera-pipeline`: Add support for camera identity/index and multi-device discovery (return list of UVC devices, not just the first)
-- `frame-capture`: Capture naming scheme changes to include camera identity prefix (`cam0_`/`cam1_`)
+- `frame-capture`: Capture naming scheme changes to position-based prefixes (`A_`/`D_`) where A = left canvas, D = right canvas
 
 ## Impact
 

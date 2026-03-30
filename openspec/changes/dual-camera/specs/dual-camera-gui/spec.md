@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: Two side-by-side preview panels
-`MainWindow` SHALL display two preview panels in a horizontal layout, one for each camera (cam0 on the left, cam1 on the right).
+### Requirement: Two side-by-side preview panels with position labels
+`MainWindow` SHALL display two preview panels in a horizontal layout, labeled as "Left (A)" and "Right (D)" to indicate their capture filename prefixes.
 
 #### Scenario: Both cameras connected
 - **WHEN** both cameras are detected and pipelines start
-- **THEN** the window shows two live 720p previews side by side
+- **THEN** the window shows two live 720p previews side by side with labels "Left (A)" and "Right (D)"
 
 #### Scenario: One camera missing
 - **WHEN** only one camera is detected
@@ -37,3 +37,14 @@ If a camera pipeline fails, the corresponding preview panel SHALL display an err
 #### Scenario: One camera errors during operation
 - **WHEN** cam1 pipeline reports an error while cam0 is running
 - **THEN** the cam1 preview panel shows the error message and cam0 continues previewing normally
+
+### Requirement: Swap cameras button
+`MainWindow` SHALL provide a "Swap Cameras" button that calls `DualCameraManager.swap_cameras()` and updates the preview panel bindings.
+
+#### Scenario: User clicks swap button
+- **WHEN** the user clicks "Swap Cameras" while both cameras are running
+- **THEN** the left and right preview panels exchange their camera streams, and the labels update to reflect the new mapping
+
+#### Scenario: Swap updates window handles
+- **WHEN** cameras are swapped
+- **THEN** the GUI stops both pipelines, swaps the window handle assignments, and restarts the pipelines with the new handles
