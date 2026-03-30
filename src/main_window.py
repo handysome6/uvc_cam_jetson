@@ -256,20 +256,20 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_swap(self):
         logger.info("Swap cameras triggered")
+        self._manager.stop()
         self._manager.swap_cameras()
 
     @Slot()
     def _on_cameras_swapped(self):
-        logger.info("Cameras swapped — reassigning window handles")
+        logger.info("Cameras swapped — restarting pipelines with new mapping")
+        handles: list[int | None] = [None, None]
         for canvas_pos in range(2):
             widget = self._previews[canvas_pos]
-            pipe = self._manager.pipeline_for_canvas(canvas_pos)
-            logger.info("Canvas {}: widget={}, pipe={}", canvas_pos, type(widget).__name__, pipe)
-            if isinstance(widget, _PreviewWidget) and pipe is not None:
-                handle = int(widget.winId())
-                logger.info("Reassigning canvas {} to pipeline with handle {}", canvas_pos, handle)
-                pipe.set_window_handle(handle)
-        self._status.setText("Cameras swapped")
+            if isinstance(widget, _PreviewWidget):
+                handles[canvas_pos] = int(widget.winId())
+        results = self._manager.start(handles)
+        started = sum(1 for r in results if r)
+        self._status.setText(f"Cameras swapped — {started} camera(s) running")
 
     # ------------------------------------------------------------------
     # Preview frame handler — appsink fallback
