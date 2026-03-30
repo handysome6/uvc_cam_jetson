@@ -263,10 +263,12 @@ class MainWindow(QMainWindow):
         logger.info("Cameras swapped — reassigning window handles")
         for canvas_pos in range(2):
             widget = self._previews[canvas_pos]
-            if isinstance(widget, _PreviewWidget):
-                pipe = self._manager.pipeline_for_canvas(canvas_pos)
-                if pipe is not None:
-                    pipe.set_window_handle(int(widget.winId()))
+            pipe = self._manager.pipeline_for_canvas(canvas_pos)
+            logger.info("Canvas {}: widget={}, pipe={}", canvas_pos, type(widget).__name__, pipe)
+            if isinstance(widget, _PreviewWidget) and pipe is not None:
+                handle = int(widget.winId())
+                logger.info("Reassigning canvas {} to pipeline with handle {}", canvas_pos, handle)
+                pipe.set_window_handle(handle)
         self._status.setText("Cameras swapped")
 
     # ------------------------------------------------------------------

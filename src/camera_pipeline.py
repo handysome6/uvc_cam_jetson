@@ -539,13 +539,18 @@ class CameraPipeline(QObject):
         Dynamically change the window handle for VideoOverlay rendering.
         Can be called while pipeline is running.
         """
+        logger.info("set_window_handle called: handle={}, use_overlay={}, sink={}",
+                    window_handle, self._use_overlay, self._preview_sink)
         if self._use_overlay and self._preview_sink is not None and window_handle is not None:
             try:
+                overlay = self._preview_sink.get_static_pad("sink").query(Gst.Query.new_context("GstVideoOverlay"))
+                logger.info("VideoOverlay query result: {}", overlay)
                 self._preview_sink.set_window_handle(window_handle)
                 self._window_handle = window_handle
                 self._preview_sink.expose()
+                logger.info("Window handle set successfully to {}", window_handle)
             except Exception as e:
-                logger.warning("Failed to set window handle: {}", e)
+                logger.error("Failed to set window handle: {}", e)
 
     # ------------------------------------------------------------------
     # Frame capture (tasks 4.1 + 4.2)
