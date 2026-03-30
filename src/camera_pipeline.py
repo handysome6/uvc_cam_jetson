@@ -534,6 +534,19 @@ class CameraPipeline(QObject):
             except Exception:
                 pass  # not all sinks implement expose; safe to ignore
 
+    def set_window_handle(self, window_handle: int | None):
+        """
+        Dynamically change the window handle for VideoOverlay rendering.
+        Can be called while pipeline is running.
+        """
+        if self._use_overlay and self._preview_sink is not None and window_handle is not None:
+            try:
+                self._preview_sink.set_window_handle(window_handle)
+                self._window_handle = window_handle
+                self._preview_sink.expose()
+            except Exception as e:
+                logger.warning("Failed to set window handle: {}", e)
+
     # ------------------------------------------------------------------
     # Frame capture (tasks 4.1 + 4.2)
     # ------------------------------------------------------------------

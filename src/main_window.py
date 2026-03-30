@@ -256,20 +256,17 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_swap(self):
         logger.info("Swap cameras triggered")
-        self._manager.stop()
         self._manager.swap_cameras()
 
     @Slot()
     def _on_cameras_swapped(self):
-        logger.info("Cameras swapped — restarting with new mapping")
-        handles = []
+        logger.info("Cameras swapped — reassigning window handles")
         for canvas_pos in range(2):
             widget = self._previews[canvas_pos]
             if isinstance(widget, _PreviewWidget):
-                handles.append(int(widget.winId()))
-            else:
-                handles.append(None)
-        self._manager.start(handles)
+                pipe = self._manager.pipeline_for_canvas(canvas_pos)
+                if pipe is not None:
+                    pipe.set_window_handle(int(widget.winId()))
         self._status.setText("Cameras swapped")
 
     # ------------------------------------------------------------------
