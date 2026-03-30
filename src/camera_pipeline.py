@@ -49,8 +49,8 @@ def _is_capture_device(dev_path: str) -> bool:
         with open(dev_path, "rb") as f:
             buf = b"\x00" * 104  # sizeof(struct v4l2_capability)
             info = fcntl.ioctl(f, _VIDIOC_QUERYCAP, buf)
-        caps = struct.unpack_from("I", info, 20)[0]  # .capabilities field
-        return bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
+        device_caps = struct.unpack_from("I", info, 88)[0]  # .device_caps field
+        return bool(device_caps & _V4L2_CAP_VIDEO_CAPTURE)
     except Exception:
         return False
 
