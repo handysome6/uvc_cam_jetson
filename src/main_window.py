@@ -3,13 +3,15 @@ MainWindow — dual-camera preview + capture UI.
 
 Layout:
   ┌──────────────────┬──────────────────┐
-  │   Camera 0       │   Camera 1       │
+  │   Left (A)       │   Right (D)      │
   │   (720p preview) │   (720p preview) │
   ├──────────────────┴──────────────────┤
-  │  [Capture]   Status: ...            │
+  │  [Capture] [Swap Cameras]           │
+  │  Status: ...                        │
   └─────────────────────────────────────┘
 
-Capture files land in ~/captures/cam{N}_{YYYYMMDD}_{HHMMSS}_{mmm}.jpg
+Capture files land in ~/captures/A_{YYYYMMDD}_{HHMMSS}_{mmm}.jpg (left)
+                                  D_{YYYYMMDD}_{HHMMSS}_{mmm}.jpg (right)
 """
 
 import os
@@ -92,10 +94,11 @@ class MainWindow(QMainWindow):
         self._manager = manager
         self._manager.camera_error.connect(self._on_camera_error)
         self._manager.camera_eos.connect(self._on_camera_eos)
+        self._manager.cameras_swapped.connect(self._on_cameras_swapped)
 
         os.makedirs(CAPTURE_DIR, exist_ok=True)
 
-        # Preview widgets: one per camera slot (may be _PreviewWidget or QLabel)
+        # Preview widgets: one per canvas position (may be _PreviewWidget or QLabel)
         self._previews: list[QWidget] = [None, None]
         self._setup_ui()
 
@@ -110,19 +113,43 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # Preview area — two panels side by side
+        # Preview area — two panels side by side with labels
+        preview_container = QWidget()
+        preview_root = QVBoxLayout(preview_container)
+        preview_root.setContentsMargins(0, 0, 0, 0)
+        preview_root.setSpacing(4)
+
+        # Labels row
+        labels_row = QWidget()
+        labels_layout = QHBoxLayout(labels_row)
+        labels_layout.setContentsMargins(0, 0, 0, 0)
+        labels_layout.setSpacing(6)
+
+        left_label = QLabel("Left (A)")
+        left_label.setAlignment(Qt.AlignCenter)
+        left_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+
+        right_label = QLabel("Right (D)")
+        right_label.setAlignment(Qt.AlignCenter)
+        right_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+
+        labels_layout.addWidget(left_label, stretch=1)
+        labels_layout.addWidget(right_label, stretch=1)
+        preview_root.addWidget(labels_row)
+
+        # Preview panels row
         preview_row = QWidget()
         preview_layout = QHBoxLayout(preview_row)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(6)
 
-        for i in range(2):
-            pipe = self._manager.pipeline(i)
+        for canvas_pos in range(2):
+            pipe = self._manager.pipeline_for_canvas(canvas_pos)
             if pipe is not None:
                 if self._manager.use_overlay:
                     widget = _PreviewWidget(pipe)
                 else:
-                    widget = QLabel(f"Cam {i}: waiting…")
+                    widget = QLabel(f"Canvas {canvas_pos}: waiting…")
                     widget.setAlignment(Qt.AlignCenter)
                     widget.setMinimumSize(640, 360)
                     widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -132,10 +159,11 @@ class MainWindow(QMainWindow):
                     )
             else:
                 widget = _make_placeholder()
-            self._previews[i] = widget
+            self._previews[canvas_pos] = widget
             preview_layout.addWidget(widget, stretch=1)
 
-        root.addWidget(preview_row, stretch=1)
+        preview_root.addWidget(preview_row, stretch=1)
+        root.addWidget(preview_container, stretch=1)
 
         # Controls row
         bar = QWidget()
@@ -148,10 +176,16 @@ class MainWindow(QMainWindow):
         self._capture_btn.setMinimumWidth(100)
         self._capture_btn.clicked.connect(self._on_capture)
 
+        self._swap_btn = QPushButton("Swap Cameras")
+        self._swap_btn.setMinimumHeight(36)
+        self._swap_btn.setMinimumWidth(120)
+        self._swap_btn.clicked.connect(self._on_swap)
+
         self._status = QLabel("Starting pipelines…")
         self._status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         bar_layout.addWidget(self._capture_btn)
+        bar_layout.addWidget(self._swap_btn)
         bar_layout.addWidget(self._status, stretch=1)
         root.addWidget(bar)
 
@@ -214,6 +248,29 @@ class MainWindow(QMainWindow):
     def _reset_capture_btn(self):
         self._capture_btn.setText("Capture")
         self._capture_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Swap button
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_swap(self):
+        logger.info("Swap cameras triggered")
+        self._manager.stop()
+        self._manager.swap_cameras()
+
+    @Slot()
+    def _on_cameras_swapped(self):
+        logger.info("Cameras swapped — restarting with new mapping")
+        handles = []
+        for canvas_pos in range(2):
+            widget = self._previews[canvas_pos]
+            if isinstance(widget, _PreviewWidget):
+                handles.append(int(widget.winId()))
+            else:
+                handles.append(None)
+        self._manager.start(handles)
+        self._status.setText("Cameras swapped")
 
     # ------------------------------------------------------------------
     # Preview frame handler — appsink fallback

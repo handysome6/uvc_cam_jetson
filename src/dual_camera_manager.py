@@ -21,10 +21,12 @@ class DualCameraManager(QObject):
     Signals:
         camera_error(int, str) — camera index + error message
         camera_eos(int)        — camera index that reached EOS
+        cameras_swapped()      — emitted when camera-to-canvas mapping is swapped
     """
 
     camera_error = Signal(int, str)
     camera_eos = Signal(int)
+    cameras_swapped = Signal()
 
     def __init__(
         self,
@@ -35,6 +37,7 @@ class DualCameraManager(QObject):
         super().__init__(parent)
         self._use_overlay = use_overlay
         self._pipelines: list[CameraPipeline | None] = [None, None]
+        self._camera_mapping = [0, 1]  # maps canvas position to pipeline index
 
         for i, dev in enumerate(devices[:2]):
             pipe = CameraPipeline(device=dev, use_overlay=use_overlay, parent=self)
@@ -52,17 +55,19 @@ class DualCameraManager(QObject):
         Start both pipelines.
 
         Args:
-            window_handles: [handle_cam0, handle_cam1] — native window IDs
+            window_handles: [handle_left, handle_right] — native window IDs
                             for VideoOverlay. Pass None for absent cameras.
         Returns:
-            [ok_cam0, ok_cam1] — True if pipeline reached PLAYING.
+            [ok_left, ok_right] — True if pipeline reached PLAYING.
         """
         results = [False, False]
-        for i, pipe in enumerate(self._pipelines):
+        for canvas_pos in range(2):
+            pipe_idx = self._camera_mapping[canvas_pos]
+            pipe = self._pipelines[pipe_idx] if pipe_idx < len(self._pipelines) else None
             if pipe is None:
                 continue
-            handle = window_handles[i] if i < len(window_handles) else None
-            results[i] = pipe.start(window_handle=handle)
+            handle = window_handles[canvas_pos] if canvas_pos < len(window_handles) else None
+            results[canvas_pos] = pipe.start(window_handle=handle)
         return results
 
     def stop(self):
@@ -75,12 +80,13 @@ class DualCameraManager(QObject):
     def capture(self, directory: str) -> list[str | None]:
         """
         Capture the latest frame from both cameras with a shared timestamp.
+        Files are named based on canvas position: A_ (left) / D_ (right).
 
         Args:
             directory: Output directory for captured files.
 
         Returns:
-            [path_cam0, path_cam1] — saved file path, or None if capture failed.
+            [path_left, path_right] — saved file path, or None if capture failed.
         """
         os.makedirs(directory, exist_ok=True)
         ts = datetime.now()
@@ -88,16 +94,19 @@ class DualCameraManager(QObject):
         ts_str = ts.strftime("%Y%m%d_%H%M%S_") + f"{ms:03d}"
 
         results: list[str | None] = [None, None]
-        for i, pipe in enumerate(self._pipelines):
+        prefixes = ["A", "D"]
+        for canvas_pos in range(2):
+            pipe_idx = self._camera_mapping[canvas_pos]
+            pipe = self._pipelines[pipe_idx] if pipe_idx < len(self._pipelines) else None
             if pipe is None:
                 continue
-            filename = f"cam{i}_{ts_str}.jpg"
+            filename = f"{prefixes[canvas_pos]}_{ts_str}.jpg"
             path = os.path.join(directory, filename)
             if pipe.capture_to_file(path):
-                results[i] = path
-                logger.info("Capture cam{} → {}", i, path)
+                results[canvas_pos] = path
+                logger.info("Capture {} (cam{}) → {}", prefixes[canvas_pos], pipe_idx, path)
             else:
-                logger.warning("Capture cam{}: no frame cached", i)
+                logger.warning("Capture {} (cam{}): no frame cached", prefixes[canvas_pos], pipe_idx)
 
         return results
 
@@ -106,6 +115,19 @@ class DualCameraManager(QObject):
         if 0 <= index < 2:
             return self._pipelines[index]
         return None
+
+    def pipeline_for_canvas(self, canvas_pos: int) -> CameraPipeline | None:
+        """Return the CameraPipeline currently mapped to the given canvas position (0=left, 1=right)."""
+        if 0 <= canvas_pos < 2:
+            pipe_idx = self._camera_mapping[canvas_pos]
+            return self._pipelines[pipe_idx] if pipe_idx < len(self._pipelines) else None
+        return None
+
+    def swap_cameras(self):
+        """Swap the camera-to-canvas mapping (left <-> right)."""
+        self._camera_mapping.reverse()
+        logger.info("DualCameraManager: cameras swapped, new mapping: {}", self._camera_mapping)
+        self.cameras_swapped.emit()
 
     @property
     def use_overlay(self) -> bool:
