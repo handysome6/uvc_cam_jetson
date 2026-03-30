@@ -81,8 +81,11 @@ def _is_capture_device(dev_path: str) -> bool:
             buf = b"\x00" * 104
             info = fcntl.ioctl(f, _VIDIOC_QUERYCAP, buf)
         caps = struct.unpack_from("I", info, 20)[0]
-        return bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
-    except Exception:
+        has_capture = bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
+        print(f"DEBUG: {dev_path} caps=0x{caps:08x} has_capture={has_capture}", file=sys.stderr)
+        return has_capture
+    except Exception as e:
+        print(f"DEBUG: {dev_path} ioctl failed: {e}", file=sys.stderr)
         return False
 
 
